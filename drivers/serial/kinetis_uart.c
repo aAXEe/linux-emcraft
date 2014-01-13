@@ -402,23 +402,28 @@ static int __kinetis_stop_rx_dma(struct kinetis_uart_priv *up)
 
 /*
  * This function should be called if up->dma_ch_rx is valid.
- * This function must be called with port->lock taken.
+ * This function must be called with port->lock not taken.
  */
 static int __kinetis_start_rx_dma(struct kinetis_uart_priv *up,
 				  unsigned int cflag, unsigned int baud)
 {
+	unsigned long flags;
 	volatile struct kinetis_uart_regs *regs = up->regs;
 	int rv;
 
+	spin_lock(&up->port.lock);
 	/* Allocate Rx DMA buffer */
 	up->rx_cons_idx = 0;
 	up->rx_buf_len = kinetis_calc_bufsize(cflag, baud);
 	up->rx_buf = dma_alloc_coherent(
 		NULL, up->rx_buf_len, &up->rx_dma_handle, GFP_KERNEL);
 	if (!up->rx_buf) {
-		rv = -ENOMEM;
-		goto out;
+		spin_unlock(&up->port.lock);
+		return -ENOMEM;
 	}
+
+	spin_unlock(&up->port.lock);
+	spin_lock_irqsave(&up->port.lock, flags);
 
 	/* Clear DMA channel TCD (transfer control descriptor) */
 	rv = kinetis_dma_ch_init(up->dma_ch_rx);
@@ -459,6 +464,7 @@ static int __kinetis_start_rx_dma(struct kinetis_uart_priv *up,
 	goto out;
 
 out:
+	spin_unlock_irqrestore(&up->port.lock, flags);
 	return rv;
 }
 
@@ -492,7 +498,6 @@ static int kinetis_stop_rx_dma(struct kinetis_uart_priv *up)
 static int kinetis_start_rx_dma(struct kinetis_uart_priv *up,
 				unsigned int cflag, unsigned int baud)
 {
-	unsigned long flags;
 	int rv;
 
 	/* Stop DMA if it was running */
@@ -501,9 +506,7 @@ static int kinetis_start_rx_dma(struct kinetis_uart_priv *up,
 	/* Free DMA buffer if it was allocated */
 	kinetis_rx_dma_free(up);
 
-	spin_lock_irqsave(&up->port.lock, flags);
 	rv = __kinetis_start_rx_dma(up, cflag, baud);
-	spin_unlock_irqrestore(&up->port.lock, flags);
 
 	/*
 	 * If __kinetis_start_rx_dma() failed but up->rx_buf was successfully
@@ -658,29 +661,42 @@ static void kinetis_set_mctrl(struct uart_port *port, unsigned int mctrl)
 
 static void kinetis_stop_tx(struct uart_port *port)
 {
-	unsigned long flags;
+	unsigned long flags = 0;
+	u8 locked = 0;
 
 	/*
 	 * Disable the transmit interrupt, because otherwise we will get
 	 * flooded with interrupts.
 	 */
-	spin_lock_irqsave(&port->lock, flags);
+
+	if(!spin_is_locked(&port->lock)){
+		spin_lock_irqsave(&port->lock, flags);
+		locked = 1;
+	}
 	kinetis_regs(port)->c2 &= ~KINETIS_UART_C2_TIE_MSK;
-	spin_unlock_irqrestore(&port->lock, flags);
+
+	if(locked)
+		spin_unlock_irqrestore(&port->lock, flags);
 }
 
 static void kinetis_start_tx(struct uart_port *port)
 {
-	unsigned long flags;
-
+	unsigned long flags = 0;
+	u8 locked = 0;
 	/*
 	 * Enable the transmit interrupt in order to send the rest of the data
 	 */
-	spin_lock_irqsave(&port->lock, flags);
+	if(!spin_is_locked(&port->lock)){
+		spin_lock_irqsave(&port->lock, flags);
+		locked = 1;
+	}
+
 	kinetis_regs(port)->c2 |= KINETIS_UART_C2_TIE_MSK;
-	spin_unlock_irqrestore(&port->lock, flags);
 
 	kinetis_uart_tx_chars(kinetis_up(port));
+
+	if(locked)
+		spin_unlock_irqrestore(&port->lock, flags);
 }
 
 static void kinetis_stop_rx(struct uart_port *port)
