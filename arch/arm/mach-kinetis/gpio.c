@@ -293,7 +293,7 @@ static struct gpio_chip kinetis_chip = {
 	.set			= kinetis_gpio_set_value,
 	.base			= KINETIS_GPIO_OFF_MCU,
 	.ngpio			= KINETIS_GPIO_LEN_MCU,
-	.can_sleep		= 1,
+	.can_sleep		= 0,
 };
 
 void __init kinetis_gpio_init(void)
